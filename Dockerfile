@@ -10,7 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # criu make install doesn't respect apt asciidoc
 RUN pip install asciidoc
 
-RUN git clone https://github.com/checkpoint-restore/criu /tmp/criu-src && \
+ARG CRIU_REPO=https://github.com/checkpoint-restore/criu
+ARG CRIU_REF=criu-dev
+
+RUN git clone --branch ${CRIU_REF} --depth 1 --single-branch \
+        ${CRIU_REPO} /tmp/criu-src && \
     cd /tmp/criu-src && \
     make && \
     make install-criu install-man && \
@@ -29,5 +33,6 @@ RUN git clone https://github.com/j9smith/vllm /opt/vllm
 WORKDIR /opt/vllm
 
 RUN VLLM_USE_PRECOMPILED=1 pip install -e . --no-build-isolation
+RUN pip uninstall -y flashinfer-jit-cache
 
 ENTRYPOINT [ "vllm", "serve", "meta-llama/Llama-3.2-3B-Instruct", "--gpu-memory-utilization", "0.80", "--max-model-len", "8192" ]
