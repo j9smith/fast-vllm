@@ -4,7 +4,7 @@ set -euo pipefail
 
 DUMP_DIR=${1:-dump-$(date +%s)}
 LOGS_DIR="/home/joel/Projects/fast-vllm/logs"
-CHECKPOINTS_DIR="/home/joel/Projects/fast-vllm/experiments/2/checkpoints"
+CHECKPOINTS_DIR="/home/joel/Projects/fast-vllm/experiments/3/checkpoints"
 SHM_DIR="$HOME/Projects/fast-vllm/shm"
 
 mkdir -p "$LOGS_DIR"

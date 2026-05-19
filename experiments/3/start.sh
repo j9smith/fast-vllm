@@ -3,7 +3,7 @@ set -euo pipefail
 
 EXPERIMENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EVENTS="${EXPERIMENT_DIR}/events.log"
-CHECKPOINTS_DIR="/home/joel/Projects/fast-vllm/experiments/2/checkpoints"
+CHECKPOINTS_DIR="/home/joel/Projects/fast-vllm/experiments/3/checkpoints"
 SHM_DIR="$HOME/Projects/fast-vllm/shm"
 
 DUMP_DIR=${1:-}
@@ -59,6 +59,7 @@ docker run --rm --gpus all --name fast-vllm \
       --shell-job \
       --enable-external-masters \
       --allow-uprobes \
+      --display-stats \
       -v4 \
       -o restore.log" &
 RESTORE_PID=$!
