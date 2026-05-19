@@ -21,10 +21,17 @@ To force slow case, clear page cache (20.4s):
 sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
 ./run.sh 2 
 ```
-Force prefetch to get fast case (10.7s):
+Force prefetch image into page cache to get fast case (10.7s):
 ```
 vmtouch -t experiments/[DUMP DIR]/pages-*.img
 ./run.sh 2
+```
+
+Switching to [doubleword criu fork zero-copy branch](https://github.com/doublewordai/criu/tree/warmstart/zero-copy-restore) (`restorer.c` rewritten to use `mmap` instead of `preadv`) reduces startup to **8.1s** when warm (image pages already in page cache):
+```
+docker build \
+  --build-arg CRIU_REPO=https://github.com/doublewordai/criu \
+  --build-arg CRIU_REF=warmstart/zero-copy-restore .
 ```
 
 #### Experiment 3 - criu, vllm sleep level 2
