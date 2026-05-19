@@ -23,8 +23,8 @@ sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
 ```
 Force prefetch to get fast case (10.7s):
 ```
-vmtouch -t experiments/2/checkpoints/dump-1779184471/pages-*.img
-./run.sh 2  # should be fast
+vmtouch -t experiments/[DUMP DIR]/pages-*.img
+./run.sh 2
 ```
 
 #### Experiment 3 - criu, vllm sleep level 2
