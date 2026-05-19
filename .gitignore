@@ -1,0 +1,6 @@
+*.log
+*.summary
+checkpoints/
+logs/
+v0/
+shm/
