@@ -25,6 +25,9 @@ if [[ ! -d "$SHM_DIR" ]]; then
   exit 1
 fi
 
+echo "Dropping page cache..."
+sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+
 echo "CHECKPOINT=${DUMP_DIR}" >> "$EVENTS"
 
 docker rm -f fast-vllm 2>/dev/null || true
@@ -60,15 +63,30 @@ docker run --rm --gpus all --name fast-vllm \
       --enable-external-masters \
       --allow-uprobes \
       --display-stats \
+      --ext-unix-sk \
+      --link-remap \
       -v4 \
-      -o restore.log" &
+      -o restore.log" \
+      > "$EXPERIMENT_DIR/vllm.log" 2>&1 &
 RESTORE_PID=$!
 
 echo "RESTORE_ISSUED=$(date +%s%N)" >> "$EVENTS"
 
+echo "VMTOUCH_START=$(date +%s%N)" >> "$EVENTS"
+(
+    # Run vmtouch in parallel across files, 4-8 concurrent processes
+    # to push NVMe queue depth above 1.
+    find "${CHECKPOINTS_DIR}/${DUMP_DIR}/" -maxdepth 1 -type f \
+        -name 'pages-*.img' -print0 | \
+        xargs -0 -P 8 -n 1 vmtouch -t > /tmp/vmtouch.log 2>&1
+    echo "VMTOUCH_DONE=$(date +%s%N)" >> "$EVENTS"
+) &
+VMTOUCH_PID=$!
+
 cleanup() {
-  docker rm -f fast-vllm >/dev/null 2>&1 || true
-  wait $RESTORE_PID 2>/dev/null || true
+    docker logs fast-vllm > "$EXPERIMENT_DIR/vllm.log" 2>&1 || true
+    docker rm -f fast-vllm >/dev/null 2>&1 || true
+    wait $RESTORE_PID 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -79,6 +97,7 @@ until curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/v1/models 2>/
   kill -0 $RESTORE_PID 2>/dev/null || {
     echo "Restore container died"
     sudo tail -40 "${CHECKPOINTS_DIR}/${DUMP_DIR}/restore.log" 2>/dev/null || true
+    tail -40 "$EXPERIMENT_DIR/vllm.log" 2>/dev/null || true
     exit 1
   }
   if (( $(date +%s) > DEADLINE )); then
@@ -90,8 +109,11 @@ done
 echo "SERVER_UP=$(date +%s%N)" >> "$EVENTS"
 
 echo "Waking vLLM..."
-curl -s -X POST http://localhost:8000/wake_up >/dev/null
+curl -s -X POST http://localhost:8000/wake_up?tags=weights >/dev/null
 echo "WAKE_DONE=$(date +%s%N)" >> "$EVENTS"
+
+curl -X POST 'http://localhost:8000/collective_rpc' -H 'Content-Type: application/json' -d '{"method":"reload_weights"}'
+curl -X POST 'http://localhost:8000/wake_up?tags=kv_cache'
 
 echo "Sending test request..."
 RESPONSE=$(curl -s -X POST http://localhost:8000/v1/completions \

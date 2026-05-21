@@ -26,13 +26,12 @@ RUN git clone --depth 1 https://github.com/NVIDIA/cuda-checkpoint /tmp/cuda-chec
     chmod +x /usr/local/bin/cuda-checkpoint && \
     rm -rf /tmp/cuda-checkpoint
 
-# use my fork (for timing instrumentation)
 RUN git config --global --add safe.directory /opt/vllm
 RUN pip uninstall -y vllm
 RUN git clone https://github.com/j9smith/vllm /opt/vllm
 WORKDIR /opt/vllm
 
-RUN VLLM_USE_PRECOMPILED=1 pip install -e . --no-build-isolation
+RUN pip install setuptools-rust && VLLM_USE_PRECOMPILED=1 pip install -e . --no-build-isolation
 RUN pip uninstall -y flashinfer-jit-cache
 
 ENTRYPOINT [ "vllm", "serve", "meta-llama/Llama-3.2-3B-Instruct", "--gpu-memory-utilization", "0.80", "--max-model-len", "8192" ]

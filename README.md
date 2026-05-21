@@ -2,12 +2,12 @@ Model: Llama-3.2-3B-Instruct
 
 #### Current progress
 Naive cold start: **~81s**  
-`criu` (patched to use `mmap` instead of `preadv`) + overlapped `vmtouch` on container start: **~16s**
+`criu` (patched to use `mmap` instead of `preadv`) + overlapped `vmtouch` on container start + vLLM sleep level 2: **~11s**
 
 #### Experiment 1 - cache mounting
 Simply remount the caches (`~/.cache/vllm/* ~/.triton/* ~/.cache/flashinfer/* ~/.nv/ComputeCache`) generated during vllm init.  
 Cold start, weights on disk, all caches cleared: **81 seconds**  
-Warm start, weights in RAM, caches filled: **38 seconds**
+Warm start, weights in page cache (RAM), caches filled: **38 seconds**
 
 #### Experiment 2 - criu, vllm sleep level 1
 Capture vLLM at sleep level 1. 
@@ -42,9 +42,8 @@ docker build \
   --build-arg CRIU_REF=warmstart/zero-copy-restore .
 ```
 
-
 #### Experiment 3 - criu, vllm sleep level 2
 All else applies as above, but capture vLLM at sleep level 2.
 
 #### Progress
-- Exploring how to release pinned anonymous memory (~8.5gb in /dev/zero); current hypothesis is that it is PyTorch allocator/CUDA -- possibly maintaining weight buffer alloc even after weights are released from device memory. `criu` dumps this memory, inflating checkpoint sizes. If we could decrease checkpoint size, restore should be faster.
+- ~~Exploring how to release pinned anonymous memory (~8.5gb in /dev/zero); current hypothesis is that it is PyTorch allocator/CUDA -- possibly maintaining weight buffer alloc even after weights are released from device memory. `criu` dumps this memory, inflating checkpoint sizes. If we could decrease checkpoint size, restore should be faster.~~ -- vLLM was in sleep mode 1 (not 2), and so the weights were being stored in the checkpoint. Rectifying this reduced from **16s** to **11s**.

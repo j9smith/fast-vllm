@@ -19,6 +19,7 @@ LOG="${LOGS_DIR}/${DUMP_DIR}.log"
 docker rm -f fast-vllm 2>/dev/null || true
 
 echo "Starting vLLM container... (server log: $LOG)"
+
 docker run --rm --init --gpus all --name fast-vllm \
   --cap-add=SYS_ADMIN \
   --cap-add=SYS_PTRACE \
@@ -29,12 +30,12 @@ docker run --rm --init --gpus all --name fast-vllm \
   --cap-add=DAC_READ_SEARCH \
   --security-opt seccomp=unconfined \
   --security-opt apparmor=unconfined \
-  -v /home/joel/Projects/vllm:/opt/vllm \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -v ~/.cache/vllm:/root/.cache/vllm \
   -v ~/.triton:/root/.triton \
   -v ~/.cache/flashinfer:/root/.cache/flashinfer \
   -v ~/.nv:/root/.nv \
+  -v /home/joel/Projects/vllm:/opt/vllm \
   -v "${SHM_DIR}:/dev/shm" \
   -v "${CHECKPOINTS_DIR}:/checkpoints" \
   -p 8000:8000 \
@@ -45,12 +46,48 @@ docker run --rm --init --gpus all --name fast-vllm \
   -e TORCH_NUM_THREADS=1 \
   -e TOKENIZERS_PARALLELISM=false \
   -e CUDA_DEVICE_MAX_CONNECTIONS=1 \
+  --entrypoint bash \
   vllm-dev \
-  --gpu-memory-utilization 0.80 \
-  --max-model-len 8192 \
-  --enable-sleep-mode \
-  > "$LOG" 2>&1 &
+  -c "exec vllm serve meta-llama/Llama-3.2-3B-Instruct \
+        --gpu-memory-utilization 0.80 \
+        --max-model-len 8192 \
+        --enable-sleep-mode \
+        > /dev/null 2>&1" &
 DOCKER_PID=$!
+
+# Below causes broken pipeline issues // internal server error on vllm collective rpc
+# docker run --rm --init --gpus all --name fast-vllm \
+#   --cap-add=SYS_ADMIN \
+#   --cap-add=SYS_PTRACE \
+#   --cap-add=SYS_TIME \
+#   --cap-add=SYS_RESOURCE \
+#   --cap-add=CHECKPOINT_RESTORE \
+#   --cap-add=NET_ADMIN \
+#   --cap-add=DAC_READ_SEARCH \
+#   --security-opt seccomp=unconfined \
+#   --security-opt apparmor=unconfined \
+#   -v ~/.cache/huggingface:/root/.cache/huggingface \
+#   -v ~/.cache/vllm:/root/.cache/vllm \
+#   -v ~/.triton:/root/.triton \
+#   -v ~/.cache/flashinfer:/root/.cache/flashinfer \
+#   -v ~/.nv:/root/.nv \
+#   -v /home/joel/Projects/vllm:/opt/vllm \
+#   -v "${SHM_DIR}:/dev/shm" \
+#   -v "${CHECKPOINTS_DIR}:/checkpoints" \
+#   -p 8000:8000 \
+#   -e HF_HUB_OFFLINE=1 \
+#   -e VLLM_SERVER_DEV_MODE=1 \
+#   -e OMP_NUM_THREADS=1 \
+#   -e MKL_NUM_THREADS=1 \
+#   -e TORCH_NUM_THREADS=1 \
+#   -e TOKENIZERS_PARALLELISM=false \
+#   -e CUDA_DEVICE_MAX_CONNECTIONS=1 \
+#   vllm-dev \
+#   --gpu-memory-utilization 0.80 \
+#   --max-model-len 8192 \
+#   --enable-sleep-mode \
+#   > "$LOG" 2>&1 &
+# DOCKER_PID=$!
 
 echo "Waiting for /v1/models..."
 until curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/v1/models 2>/dev/null | grep -q 200; do
@@ -67,11 +104,86 @@ until curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8000/v1/co
 done
 
 echo "Putting vLLM to sleep..."
-curl -s -X POST http://localhost:8000/sleep -H "Content-Type: application/json" -d '{"level": 2}'
+curl -s -X POST 'http://localhost:8000/sleep?level=2'
 echo ""
 
 SLEEP_STATE=$(curl -s http://localhost:8000/is_sleeping)
 echo "Sleep state: $SLEEP_STATE"
+
+echo "\n\nGPU mem just before dump:"
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+
+echo "\n\nHost RSS for EngineCore:"
+docker exec fast-vllm bash -c '
+    for pid in $(pgrep -f vllm); do
+        rss=$(grep VmRSS /proc/$pid/status 2>/dev/null | awk "{print \$2}")
+        cmd=$(tr "\0" " " < /proc/$pid/cmdline 2>/dev/null | cut -c1-60)
+        echo "  $pid  ${rss}kB  $cmd"
+    done
+'
+
+echo "=== Memory breakdown by process ==="
+docker exec fast-vllm bash -c '
+    for pid in $(ls /proc | grep -E "^[0-9]+$" | sort -n); do
+        if [ -r /proc/$pid/comm ]; then
+            comm=$(cat /proc/$pid/comm 2>/dev/null)
+            if [[ "$comm" =~ python|vllm|EngineCore ]]; then
+                rss=$(grep VmRSS /proc/$pid/status | awk "{print \$2}")
+                echo "PID $pid ($comm): ${rss} kB"
+            fi
+        fi
+    done
+'
+
+docker exec fast-vllm bash -c '
+    PID=$(pgrep -f EngineCore | head -1)
+    awk "
+        /^[0-9a-f]+-[0-9a-f]+/ {name=\$6; if (name==\"\") name=\"[anon]\"}
+        /^Rss:/ {
+            if (name ~ /\.so/) cat=\"libs\"
+            else if (name == \"[heap]\") cat=\"heap\"
+            else if (name == \"[stack]\") cat=\"stack\"
+            else if (name == \"[anon]\") cat=\"anon\"
+            else if (name ~ /\.safetensors|\.bin/) cat=\"weights_file\"
+            else if (name ~ /\/dev\/shm/) cat=\"shm\"
+            else if (name ~ /^\//) cat=\"other_file\"
+            else cat=\"unknown\"
+            sum[cat] += \$2
+        }
+        END { for (k in sum) printf \"%-15s %10d kB\n\", k, sum[k] }
+    " /proc/$PID/smaps | sort -k 2 -rn
+'
+
+temp_PID=$(pgrep -f EngineCore | head -1)
+
+docker exec fast-vllm bash -c "
+pmap -x $temp_PID | sort -k3 -nr | head -40
+"
+
+# Everything inside the container, no PID namespace confusion
+docker exec fast-vllm bash -c '
+PID=$(pgrep -f EngineCore | head -1)
+echo "=== EngineCore PID: $PID ==="
+
+echo ""
+echo "=== Top RSS regions (pmap) ==="
+echo "address    kbytes    rss    dirty    mode    mapping"
+pmap -x $PID | sort -k3 -nr | head -40
+
+echo ""
+echo "=== smaps: large regions with Private_Dirty ==="
+awk "
+/^[0-9a-f]/{
+  if (rss+0 > 50000) print rss, pd, name
+  name=\$6; rss=0; pd=0
+}
+/^Rss:/{rss=\$2}
+/^Private_Dirty:/{pd=\$2}
+END { if (rss+0 > 50000) print rss, pd, name }
+" /proc/$PID/smaps | sort -nr | head -50
+
+echo ""
+'
 
 echo "Warmed and asleep. Dumping..."
 
