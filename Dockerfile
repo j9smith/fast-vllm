@@ -28,10 +28,13 @@ RUN git clone --depth 1 https://github.com/NVIDIA/cuda-checkpoint /tmp/cuda-chec
 
 RUN git config --global --add safe.directory /opt/vllm
 RUN pip uninstall -y vllm
-RUN git clone https://github.com/j9smith/vllm /opt/vllm
+RUN git clone --branch exp/fast-weights https://github.com/j9smith/vllm /opt/vllm
 WORKDIR /opt/vllm
 
-RUN pip install setuptools-rust && VLLM_USE_PRECOMPILED=1 pip install -e . --no-build-isolation
+RUN pip install setuptools-rust && \
+    VLLM_USE_PRECOMPILED=1 \
+    VLLM_PRECOMPILED_WHEEL_COMMIT=a970fb5a1a5800c552c74cf3278d6ee7c1c3fca1 \
+    pip install -e . --no-build-isolation
 RUN pip uninstall -y flashinfer-jit-cache
 
 ENTRYPOINT [ "vllm", "serve", "meta-llama/Llama-3.2-3B-Instruct", "--gpu-memory-utilization", "0.80", "--max-model-len", "8192" ]
