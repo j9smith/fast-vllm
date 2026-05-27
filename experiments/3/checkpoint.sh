@@ -5,10 +5,12 @@ set -euo pipefail
 DUMP_DIR=${1:-dump-$(date +%s)}
 LOGS_DIR="/home/joel/Projects/fast-vllm/logs"
 CHECKPOINTS_DIR="/home/joel/Projects/fast-vllm/experiments/3/checkpoints"
+WEIGHTS_DIR="/home/joel/Projects/fast-vllm/experiments/3/weights"
 SHM_DIR="$HOME/Projects/fast-vllm/shm"
 
 mkdir -p "$LOGS_DIR"
 mkdir -p "${CHECKPOINTS_DIR}/${DUMP_DIR}"
+mkdir -p "${WEIGHTS_DIR}"
 
 rm -rf "$SHM_DIR"
 mkdir -p "$SHM_DIR"
@@ -20,6 +22,7 @@ docker rm -f fast-vllm 2>/dev/null || true
 
 echo "Starting vLLM container... (server log: $LOG)"
 
+#-v /home/joel/Projects/vllm:/opt/vllm \
 docker run --rm --init --gpus all --name fast-vllm \
   --cap-add=SYS_ADMIN \
   --cap-add=SYS_PTRACE \
@@ -35,9 +38,9 @@ docker run --rm --init --gpus all --name fast-vllm \
   -v ~/.triton:/root/.triton \
   -v ~/.cache/flashinfer:/root/.cache/flashinfer \
   -v ~/.nv:/root/.nv \
-  -v /home/joel/Projects/vllm:/opt/vllm \
   -v "${SHM_DIR}:/dev/shm" \
   -v "${CHECKPOINTS_DIR}:/checkpoints" \
+  -v "${LOGS_DIR}:/logs" \
   -p 8000:8000 \
   -e HF_HUB_OFFLINE=1 \
   -e VLLM_SERVER_DEV_MODE=1 \
@@ -46,6 +49,8 @@ docker run --rm --init --gpus all --name fast-vllm \
   -e TORCH_NUM_THREADS=1 \
   -e TOKENIZERS_PARALLELISM=false \
   -e CUDA_DEVICE_MAX_CONNECTIONS=1 \
+  -v "${WEIGHTS_DIR}:/weights" \
+  -e FAST_VLLM_WEIGHTS_PATH="/weights/weights" \
   --entrypoint bash \
   vllm-dev \
   -c "exec vllm serve meta-llama/Llama-3.2-3B-Instruct \
@@ -54,40 +59,6 @@ docker run --rm --init --gpus all --name fast-vllm \
         --enable-sleep-mode \
         > /dev/null 2>&1" &
 DOCKER_PID=$!
-
-# Below causes broken pipeline issues // internal server error on vllm collective rpc
-# docker run --rm --init --gpus all --name fast-vllm \
-#   --cap-add=SYS_ADMIN \
-#   --cap-add=SYS_PTRACE \
-#   --cap-add=SYS_TIME \
-#   --cap-add=SYS_RESOURCE \
-#   --cap-add=CHECKPOINT_RESTORE \
-#   --cap-add=NET_ADMIN \
-#   --cap-add=DAC_READ_SEARCH \
-#   --security-opt seccomp=unconfined \
-#   --security-opt apparmor=unconfined \
-#   -v ~/.cache/huggingface:/root/.cache/huggingface \
-#   -v ~/.cache/vllm:/root/.cache/vllm \
-#   -v ~/.triton:/root/.triton \
-#   -v ~/.cache/flashinfer:/root/.cache/flashinfer \
-#   -v ~/.nv:/root/.nv \
-#   -v /home/joel/Projects/vllm:/opt/vllm \
-#   -v "${SHM_DIR}:/dev/shm" \
-#   -v "${CHECKPOINTS_DIR}:/checkpoints" \
-#   -p 8000:8000 \
-#   -e HF_HUB_OFFLINE=1 \
-#   -e VLLM_SERVER_DEV_MODE=1 \
-#   -e OMP_NUM_THREADS=1 \
-#   -e MKL_NUM_THREADS=1 \
-#   -e TORCH_NUM_THREADS=1 \
-#   -e TOKENIZERS_PARALLELISM=false \
-#   -e CUDA_DEVICE_MAX_CONNECTIONS=1 \
-#   vllm-dev \
-#   --gpu-memory-utilization 0.80 \
-#   --max-model-len 8192 \
-#   --enable-sleep-mode \
-#   > "$LOG" 2>&1 &
-# DOCKER_PID=$!
 
 echo "Waiting for /v1/models..."
 until curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/v1/models 2>/dev/null | grep -q 200; do
@@ -160,7 +131,6 @@ docker exec fast-vllm bash -c "
 pmap -x $temp_PID | sort -k3 -nr | head -40
 "
 
-# Everything inside the container, no PID namespace confusion
 docker exec fast-vllm bash -c '
 PID=$(pgrep -f EngineCore | head -1)
 echo "=== EngineCore PID: $PID ==="

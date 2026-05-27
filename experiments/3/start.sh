@@ -4,7 +4,9 @@ set -euo pipefail
 EXPERIMENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EVENTS="${EXPERIMENT_DIR}/events.log"
 CHECKPOINTS_DIR="/home/joel/Projects/fast-vllm/experiments/3/checkpoints"
+WEIGHTS_DIR="/home/joel/Projects/fast-vllm/experiments/3/weights"
 SHM_DIR="$HOME/Projects/fast-vllm/shm"
+LOGS_DIR="/home/joel/Projects/fast-vllm/logs"
 
 DUMP_DIR=${1:-}
 > "$EVENTS"
@@ -35,6 +37,7 @@ docker rm -f fast-vllm 2>/dev/null || true
 echo "Restoring from ${DUMP_DIR}..."
 echo "CONTAINER_START=$(date +%s%N)" >> "$EVENTS"
 
+#-v /home/joel/Projects/vllm:/opt/vllm \
 docker run --rm --gpus all --name fast-vllm \
   --cap-add=SYS_ADMIN \
   --cap-add=SYS_PTRACE \
@@ -45,7 +48,6 @@ docker run --rm --gpus all --name fast-vllm \
   --cap-add=DAC_READ_SEARCH \
   --security-opt seccomp=unconfined \
   --security-opt apparmor=unconfined \
-  -v /home/joel/Projects/vllm:/opt/vllm \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -v ~/.cache/vllm:/root/.cache/vllm \
   -v ~/.triton:/root/.triton \
@@ -53,7 +55,10 @@ docker run --rm --gpus all --name fast-vllm \
   -v ~/.nv:/root/.nv \
   -v "${SHM_DIR}:/dev/shm" \
   -v "${CHECKPOINTS_DIR}:/checkpoints" \
+  -v "${LOGS_DIR}:/logs" \
   -p 8000:8000 \
+  -v "${WEIGHTS_DIR}:/weights" \
+  -e FAST_VLLM_WEIGHTS_PATH="/weights/weights" \
   --entrypoint bash \
   vllm-dev \
   -c "criu restore -L /usr/local/lib/criu \
@@ -74,8 +79,6 @@ echo "RESTORE_ISSUED=$(date +%s%N)" >> "$EVENTS"
 
 echo "VMTOUCH_START=$(date +%s%N)" >> "$EVENTS"
 (
-    # Run vmtouch in parallel across files, 4-8 concurrent processes
-    # to push NVMe queue depth above 1.
     find "${CHECKPOINTS_DIR}/${DUMP_DIR}/" -maxdepth 1 -type f \
         -name 'pages-*.img' -print0 | \
         xargs -0 -P 8 -n 1 vmtouch -t > /tmp/vmtouch.log 2>&1
@@ -112,8 +115,11 @@ echo "Waking vLLM..."
 curl -s -X POST http://localhost:8000/wake_up?tags=weights >/dev/null
 echo "WAKE_DONE=$(date +%s%N)" >> "$EVENTS"
 
-curl -X POST 'http://localhost:8000/collective_rpc' -H 'Content-Type: application/json' -d '{"method":"reload_weights"}'
-curl -X POST 'http://localhost:8000/wake_up?tags=kv_cache'
+#curl -s -X POST 'http://localhost:8000/collective_rpc' -H 'Content-Type: application/json' -d '{"method":"reload_weights"}'
+curl -s -X POST 'http://localhost:8000/collective_rpc' \
+ -H 'Content-Type: application/json' \
+ -d "{\"method\": \"reload_weights_fast\", \"kwargs\": {\"flat_file_path\": \"/weights/weights\"}}"
+curl -s -X POST 'http://localhost:8000/wake_up?tags=kv_cache'
 
 echo "Sending test request..."
 RESPONSE=$(curl -s -X POST http://localhost:8000/v1/completions \
